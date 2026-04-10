@@ -1,0 +1,85 @@
+groups:
+  - name: platform-service-alerts
+    interval: 30s
+    rules:
+
+      # ── Availability ──────────────────────────────────────────
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.service }} is DOWN"
+          description: "Prometheus cannot scrape {{ $labels.service }}. Check pod status."
+
+      # ── Error Rate ────────────────────────────────────────────
+      - alert: HighErrorRate
+        expr: |
+          rate(http_server_requests_seconds_count{status=~"5.."}[5m])
+          /
+          rate(http_server_requests_seconds_count[5m])
+          > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High 5xx error rate on {{ $labels.service }}"
+          description: "Error rate is {{ $value | humanizePercentage }} — threshold is 5%"
+
+      # ── Latency ───────────────────────────────────────────────
+      - alert: HighP95Latency
+        expr: |
+          histogram_quantile(0.95,
+            rate(http_server_requests_seconds_bucket[5m])
+          ) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 latency > 1s on {{ $labels.service }}"
+          description: "95th percentile response time is {{ $value }}s"
+
+      # ── JVM Memory ────────────────────────────────────────────
+      - alert: HighJVMHeap
+        expr: |
+          jvm_memory_used_bytes{area="heap"}
+          /
+          jvm_memory_max_bytes{area="heap"}
+          > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JVM heap > 85% on {{ $labels.service }}"
+          description: "Heap at {{ $value | humanizePercentage }}. OOMKill risk."
+
+      # ── Pod Restarts (K8s) ────────────────────────────────────
+      - alert: PodCrashLooping
+        expr: |
+          increase(kube_pod_container_status_restarts_total{
+            namespace=~"apps|nonprod|prod"
+          }[15m]) > 3
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pod {{ $labels.pod }} crash-looping"
+          description: "Pod restarted {{ $value }} times in 15 minutes"
+
+      # ── Canary health (Argo Rollouts) ─────────────────────────
+      - alert: CanaryHighErrorRate
+        expr: |
+          rate(http_server_requests_seconds_count{
+            status=~"5..",
+            deployment="canary"
+          }[2m])
+          /
+          rate(http_server_requests_seconds_count{deployment="canary"}[2m])
+          > 0.05
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Canary deployment failing on {{ $labels.app }}"
+          description: "Canary error rate {{ $value | humanizePercentage }} — rollback triggered"

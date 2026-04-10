@@ -1,0 +1,31 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-app-labels
+  annotations:
+    policies.kyverno.io/title: Require app and team labels
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >
+      All Deployments in the apps namespace must have 'app' and 'team'
+      labels. This enforces service ownership and enables proper
+      Prometheus metric labelling.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-labels-on-deployment
+      match:
+        any:
+          - resources:
+              kinds: [Deployment, Rollout]
+              namespaces: [apps]
+      validate:
+        message: >
+          Deployment/Rollout must have both 'app' and 'team' labels.
+          Example: labels: { app: my-service, team: platform }
+        pattern:
+          metadata:
+            labels:
+              app: "?*"
+              team: "?*"

@@ -1,0 +1,262 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main, develop, 'feature/**']
+  pull_request:
+    branches: [main, develop]
+
+env:
+  REGISTRY: ghcr.io
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # ── Detect which services changed ────────────────────────────────
+  detect-changes:
+    name: Detect changed services
+    runs-on: ubuntu-latest
+    outputs:
+      user-service:         ${{ steps.changes.outputs.user-service }}
+      order-service:        ${{ steps.changes.outputs.order-service }}
+      notification-service: ${{ steps.changes.outputs.notification-service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            user-service:
+              - 'services/user-service/**'
+            order-service:
+              - 'services/order-service/**'
+            notification-service:
+              - 'services/notification-service/**'
+
+  # ── Build & Test: user-service ────────────────────────────────────
+  user-service:
+    name: user-service — build, test, push
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.user-service == 'true' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+      packages: write
+    outputs:
+      image-tag: ${{ steps.vars.outputs.sha_short }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build and test
+        run: mvn clean package -f services/user-service/pom.xml
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: user-service-tests
+          path: services/user-service/target/surefire-reports/
+
+      - name: Set image tag
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trivy security scan
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type: 'fs'
+          scan-ref: './services/user-service'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '0'
+          ignore-unfixed: true
+          format: 'table'
+
+      - name: Build and push Docker image
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/user-service
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/user-service:${{ steps.vars.outputs.sha_short }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/user-service:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update image tag in platform-config
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          git clone https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/${{ github.repository_owner }}/platform-config.git
+          cd platform-config
+
+          sed -i "s|tag: .*|tag: \"${{ steps.vars.outputs.sha_short }}\"|" \
+            environments/nonprod/values/user-service-values.yaml
+
+          git config user.email "ci@github-actions.com"
+          git config user.name "GitHub Actions CI"
+          git add .
+          git diff --staged --quiet || git commit -m \
+            "chore(gitops): update user-service image to ${{ steps.vars.outputs.sha_short }} [skip ci]"
+          git push
+
+  # ── Build & Test: order-service ───────────────────────────────────
+  order-service:
+    name: order-service — build, test, push
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.order-service == 'true' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+      packages: write
+    outputs:
+      image-tag: ${{ steps.vars.outputs.sha_short }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build and test
+        run: mvn clean package -f services/order-service/pom.xml
+
+      - name: Set image tag
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trivy security scan
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type: 'fs'
+          scan-ref: './services/order-service'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '0'
+          ignore-unfixed: true
+
+      - name: Build and push Docker image
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/order-service
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/order-service:${{ steps.vars.outputs.sha_short }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/order-service:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update image tag in platform-config
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          git clone https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/${{ github.repository_owner }}/platform-config.git
+          cd platform-config
+          sed -i "s|tag: .*|tag: \"${{ steps.vars.outputs.sha_short }}\"|" \
+            environments/nonprod/values/order-service-values.yaml
+          git config user.email "ci@github-actions.com"
+          git config user.name "GitHub Actions CI"
+          git add .
+          git diff --staged --quiet || git commit -m \
+            "chore(gitops): update order-service image to ${{ steps.vars.outputs.sha_short }} [skip ci]"
+          git push
+
+  # ── Build & Test: notification-service ───────────────────────────
+  notification-service:
+    name: notification-service — build, test, push
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.notification-service == 'true' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+      packages: write
+    outputs:
+      image-tag: ${{ steps.vars.outputs.sha_short }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build and test
+        run: mvn clean package -f services/notification-service/pom.xml
+
+      - name: Set image tag
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trivy security scan
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type: 'fs'
+          scan-ref: './services/notification-service'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '0'
+          ignore-unfixed: true
+
+      - name: Build and push Docker image
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/notification-service
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/notification-service:${{ steps.vars.outputs.sha_short }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/notification-service:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update image tag in platform-config
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          git clone https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/${{ github.repository_owner }}/platform-config.git
+          cd platform-config
+          sed -i "s|tag: .*|tag: \"${{ steps.vars.outputs.sha_short }}\"|" \
+            environments/nonprod/values/notification-service-values.yaml
+          git config user.email "ci@github-actions.com"
+          git config user.name "GitHub Actions CI"
+          git add .
+          git diff --staged --quiet || git commit -m \
+            "chore(gitops): update notification-service image to ${{ steps.vars.outputs.sha_short }} [skip ci]"
+          git push
