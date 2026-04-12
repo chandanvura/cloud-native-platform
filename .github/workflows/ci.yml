@@ -11,7 +11,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # ── Detect which services changed ────────────────────────────────
+  # ── Detect which services changed ──────────────────────────────
   detect-changes:
     name: Detect changed services
     runs-on: ubuntu-latest
@@ -32,12 +32,17 @@ jobs:
             notification-service:
               - 'services/notification-service/**'
 
-  # ── Build & Test: user-service ────────────────────────────────────
+  # ── user-service ───────────────────────────────────────────────
   user-service:
     name: user-service — build, test, push
     runs-on: ubuntu-latest
     needs: detect-changes
-    if: needs.detect-changes.outputs.user-service == 'true' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 20
+    # FIX 1: added github.ref == 'refs/heads/main' so pushes to main always run
+    if: |
+      needs.detect-changes.outputs.user-service == 'true' ||
+      github.ref == 'refs/heads/main' ||
+      github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
       packages: write
@@ -66,7 +71,9 @@ jobs:
         id: vars
         run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
+      # FIX 2: only set up Buildx when we will actually build
       - name: Set up Docker Buildx
+        if: github.event_name == 'push'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
@@ -104,10 +111,9 @@ jobs:
         run: |
           git clone https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/${{ github.repository_owner }}/platform-config.git
           cd platform-config
-
-          sed -i "s|tag: .*|tag: \"${{ steps.vars.outputs.sha_short }}\"|" \
+          # FIX 3: scoped sed — only matches the indented tag: line under image:
+          sed -i "s|^  tag: .*|  tag: \"${{ steps.vars.outputs.sha_short }}\"|" \
             environments/nonprod/values/user-service-values.yaml
-
           git config user.email "ci@github-actions.com"
           git config user.name "GitHub Actions CI"
           git add .
@@ -115,12 +121,16 @@ jobs:
             "chore(gitops): update user-service image to ${{ steps.vars.outputs.sha_short }} [skip ci]"
           git push
 
-  # ── Build & Test: order-service ───────────────────────────────────
+  # ── order-service ──────────────────────────────────────────────
   order-service:
     name: order-service — build, test, push
     runs-on: ubuntu-latest
     needs: detect-changes
-    if: needs.detect-changes.outputs.order-service == 'true' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 20
+    if: |
+      needs.detect-changes.outputs.order-service == 'true' ||
+      github.ref == 'refs/heads/main' ||
+      github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
       packages: write
@@ -138,11 +148,20 @@ jobs:
       - name: Build and test
         run: mvn clean package -f services/order-service/pom.xml
 
+      # FIX 4: added missing upload test results step
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: order-service-tests
+          path: services/order-service/target/surefire-reports/
+
       - name: Set image tag
         id: vars
         run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
+        if: github.event_name == 'push'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
@@ -161,6 +180,7 @@ jobs:
           severity: 'HIGH,CRITICAL'
           exit-code: '0'
           ignore-unfixed: true
+          format: 'table'
 
       - name: Build and push Docker image
         if: github.event_name == 'push'
@@ -179,7 +199,7 @@ jobs:
         run: |
           git clone https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/${{ github.repository_owner }}/platform-config.git
           cd platform-config
-          sed -i "s|tag: .*|tag: \"${{ steps.vars.outputs.sha_short }}\"|" \
+          sed -i "s|^  tag: .*|  tag: \"${{ steps.vars.outputs.sha_short }}\"|" \
             environments/nonprod/values/order-service-values.yaml
           git config user.email "ci@github-actions.com"
           git config user.name "GitHub Actions CI"
@@ -188,12 +208,16 @@ jobs:
             "chore(gitops): update order-service image to ${{ steps.vars.outputs.sha_short }} [skip ci]"
           git push
 
-  # ── Build & Test: notification-service ───────────────────────────
+  # ── notification-service ───────────────────────────────────────
   notification-service:
     name: notification-service — build, test, push
     runs-on: ubuntu-latest
     needs: detect-changes
-    if: needs.detect-changes.outputs.notification-service == 'true' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 20
+    if: |
+      needs.detect-changes.outputs.notification-service == 'true' ||
+      github.ref == 'refs/heads/main' ||
+      github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
       packages: write
@@ -211,11 +235,20 @@ jobs:
       - name: Build and test
         run: mvn clean package -f services/notification-service/pom.xml
 
+      # FIX 4: added missing upload test results step
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: notification-service-tests
+          path: services/notification-service/target/surefire-reports/
+
       - name: Set image tag
         id: vars
         run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
+        if: github.event_name == 'push'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
@@ -234,6 +267,7 @@ jobs:
           severity: 'HIGH,CRITICAL'
           exit-code: '0'
           ignore-unfixed: true
+          format: 'table'
 
       - name: Build and push Docker image
         if: github.event_name == 'push'
@@ -252,7 +286,7 @@ jobs:
         run: |
           git clone https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/${{ github.repository_owner }}/platform-config.git
           cd platform-config
-          sed -i "s|tag: .*|tag: \"${{ steps.vars.outputs.sha_short }}\"|" \
+          sed -i "s|^  tag: .*|  tag: \"${{ steps.vars.outputs.sha_short }}\"|" \
             environments/nonprod/values/notification-service-values.yaml
           git config user.email "ci@github-actions.com"
           git config user.name "GitHub Actions CI"
